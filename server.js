@@ -1,9 +1,12 @@
-// server.js - Main Backend Server
+// server.js - Complete Backend Server with Role-based Authentication
 const express = require('express');
 const cors = require('cors');
 const sql = require('mssql');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+// Change this line at the top of server.js
+const updateCabRequestStatus = require('./services/updateRequestStatus');
+
 require('dotenv').config();
 
 const app = express();
@@ -46,9 +49,9 @@ const initializeDatabase = async () => {
   try {
     poolPromise = sql.connect(dbConfig);
     await poolPromise;
-    console.log('✅ Connected to SQL Server Database');
+    console.log('Connected to SQL Server Database');
   } catch (error) {
-    console.error('❌ Database connection failed:', error);
+    console.error('Database connection failed:', error);
     process.exit(1);
   }
 };
@@ -69,6 +72,19 @@ const authenticateToken = (req, res, next) => {
     req.user = user;
     next();
   });
+};
+
+// Role-based middleware
+const checkRole = (allowedRoles) => {
+  return (req, res, next) => {
+    const userRole = req.user.role;
+    
+    if (allowedRoles.includes(userRole)) {
+      next();
+    } else {
+      return res.status(403).json({ error: 'Access denied: Insufficient permissions' });
+    }
+  };
 };
 
 // ===================== AUTH ROUTES =====================
@@ -157,12 +173,20 @@ app.post('/api/users', async (req, res) => {
   try {
     const {
       name, email, phone, password, address, latitude, longitude,
-      type = 'user', status = 'Active'
+      type = 'user', status = 'Active',
+      departmentId, regisNo, contactNo, deskExtNo, deskNo,
+      roleId, isAvailable = true, isAccountVerified = true
     } = req.body;
 
-    // Validate required fields
-    if (!name || !email || !phone || !password || !address) {
-      return res.status(400).json({ error: 'All required fields must be provided' });
+    console.log('Received registration data:', {
+      name, email, phone, departmentId, regisNo, roleId, address
+    });
+
+    if (!name || !email || !phone || !password || !address || !departmentId || !regisNo) {
+      return res.status(400).json({ 
+        error: 'All required fields must be provided',
+        required: ['name', 'email', 'phone', 'password', 'address', 'departmentId', 'regisNo']
+      });
     }
 
     const pool = await poolPromise;
@@ -171,16 +195,30 @@ app.post('/api/users', async (req, res) => {
     const existingUser = await pool.request()
       .input('email', sql.VarChar, email)
       .input('phone', sql.VarChar, phone)
-      .query('SELECT Id FROM Users WHERE Email_ID = @email OR Mobile_No = @phone');
+      .input('regisNo', sql.VarChar, regisNo)
+      .query(`
+        SELECT Id, Email_ID, Mobile_No, Regis_No 
+        FROM Users 
+        WHERE Email_ID = @email OR Mobile_No = @phone OR Regis_No = @regisNo
+      `);
 
     if (existingUser.recordset.length > 0) {
-      return res.status(400).json({ error: 'User with this email or phone already exists' });
+      const existing = existingUser.recordset[0];
+      if (existing.Email_ID === email) {
+        return res.status(400).json({ error: 'User with this email already exists' });
+      }
+      if (existing.Mobile_No === phone) {
+        return res.status(400).json({ error: 'User with this phone number already exists' });
+      }
+      if (existing.Regis_No === regisNo) {
+        return res.status(400).json({ error: 'User with this registration number already exists' });
+      }
     }
 
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Calculate distance from office (Delhi coordinates: 28.6139, 77.2090)
+    // Calculate distance from office
     const officeLat = 28.6139;
     const officeLng = 77.2090;
     const userLat = parseFloat(latitude);
@@ -188,7 +226,7 @@ app.post('/api/users', async (req, res) => {
 
     let distance = 0;
     if (userLat && userLng) {
-      const R = 6371; // Earth's radius in km
+      const R = 6371;
       const dLat = (userLat - officeLat) * Math.PI / 180;
       const dLon = (userLng - officeLng) * Math.PI / 180;
       const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
@@ -200,9 +238,14 @@ app.post('/api/users', async (req, res) => {
 
     // Insert user
     const result = await pool.request()
+      .input('departmentId', sql.Int, parseInt(departmentId))
+      .input('regisNo', sql.VarChar, regisNo)
       .input('uName', sql.VarChar, name)
       .input('email', sql.VarChar, email)
       .input('mobile', sql.VarChar, phone)
+      .input('contactNo', sql.VarChar, contactNo || phone)
+      .input('deskExtNo', sql.VarChar, deskExtNo || null)
+      .input('deskNo', sql.VarChar, deskNo || null)
       .input('password', sql.VarChar, password)
       .input('hashPassword', sql.VarChar, hashedPassword)
       .input('address', sql.VarChar, address)
@@ -210,17 +253,22 @@ app.post('/api/users', async (req, res) => {
       .input('lng', sql.Decimal(11, 8), userLng || null)
       .input('distance', sql.Decimal(10, 2), distance)
       .input('isActive', sql.Bit, status === 'Active' ? 1 : 0)
-      .input('roleId', sql.Int, type === 'admin' ? 1 : 2)
-      .input('createdBy', sql.Int, 1)
+      .input('isAvailable', sql.Bit, isAvailable ? 1 : 0)
+      .input('roleId', sql.Int, parseInt(roleId) || (type === 'admin' ? 1 : 2))
+      .input('isLoggedIn', sql.Bit, 0)
+      .input('isAccountVerified', sql.Bit, isAccountVerified ? 1 : 0)
+      .input('createdBy', sql.VarChar, '1')
       .query(`
         INSERT INTO Users (
-          U_Name, Email_ID, Mobile_No, u_Password, Hash_Password,
-          U_Address, Lat_Address, Long_Address, Distance,
-          IsActive, Role_Id, Created_By, Created_at
+          Department_Id, Regis_No, U_Name, Email_ID, Mobile_No, Contact_No,
+          Desk_ExtNo, Desk_No, u_Password, Hash_Password, U_Address, Lat_Address, Long_Address, Distance,
+          IsActive, IsAvailable, Role_Id, IsLoggedIn, IsAccount_Verified,
+          Created_By, Created_at
         ) VALUES (
-          @uName, @email, @mobile, @password, @hashPassword,
-          @address, @lat, @lng, @distance,
-          @isActive, @roleId, @createdBy, GETDATE()
+          @departmentId, @regisNo, @uName, @email, @mobile, @contactNo,
+          @deskExtNo, @deskNo, @password, @hashPassword, @address, @lat, @lng, @distance,
+          @isActive, @isAvailable, @roleId, @isLoggedIn, @isAccountVerified,
+          @createdBy, GETDATE()
         );
         SELECT SCOPE_IDENTITY() AS Id;
       `);
@@ -233,16 +281,38 @@ app.post('/api/users', async (req, res) => {
       userId: userId,
       data: {
         id: userId,
+        regisNo: regisNo,
         name,
         email,
         phone,
-        distance: `${distance} km`
+        distance: `${distance} km`,
+        departmentId: parseInt(departmentId),
+        roleId: parseInt(roleId),
+        status: status
       }
     });
 
   } catch (error) {
     console.error('Create user error:', error);
-    res.status(500).json({ error: 'Failed to create user' });
+    
+    if (error.number === 515) {
+      res.status(500).json({ 
+        error: 'Database constraint error: Missing required field'
+      });
+    } else if (error.number === 2627) {
+      res.status(409).json({ 
+        error: 'Duplicate entry: User with this information already exists'
+      });
+    } else if (error.number === 547) {
+      res.status(400).json({ 
+        error: 'Invalid reference: Department ID does not exist'
+      });
+    } else {
+      res.status(500).json({ 
+        error: 'Failed to create user',
+        details: error.message
+      });
+    }
   }
 });
 
@@ -252,24 +322,31 @@ app.get('/api/users', async (req, res) => {
     const pool = await poolPromise;
     const result = await pool.request().query(`
       SELECT 
-        Id, U_Name, Email_ID, Mobile_No, U_Address,
-        Lat_Address, Long_Address, Distance, IsActive,
-        Role_Id, Created_at, Last_Login_at
+        Id, Department_Id, Regis_No, U_Name, Email_ID, Mobile_No, Contact_No,
+        Desk_ExtNo, Desk_No, U_Address, Lat_Address, Long_Address, Distance, 
+        IsActive, IsAvailable, Role_Id, IsAccount_Verified, Created_at, Last_Login_at
       FROM Users
       ORDER BY Created_at DESC
     `);
 
     const users = result.recordset.map(user => ({
       id: user.Id,
+      departmentId: user.Department_Id,
+      regisNo: user.Regis_No,
       name: user.U_Name,
       email: user.Email_ID,
       phone: user.Mobile_No,
+      contactNo: user.Contact_No,
+      deskExtNo: user.Desk_ExtNo,
+      deskNo: user.Desk_No,
       address: user.U_Address,
       latitude: user.Lat_Address,
       longitude: user.Long_Address,
       distance: user.Distance,
       status: user.IsActive ? 'Active' : 'Inactive',
-      role: user.Role_Id === 1 ? 'Admin' : 'User',
+      isAvailable: user.IsAvailable,
+      role: user.Role_Id === 1 ? 'Admin' : user.Role_Id === 2 ? 'Employee' : user.Role_Id === 3 ? 'Manager' : 'Guest',
+      isVerified: user.IsAccount_Verified,
       joinDate: user.Created_at,
       lastLogin: user.Last_Login_at
     }));
@@ -297,6 +374,15 @@ app.post('/api/vendors', async (req, res) => {
 
     const pool = await poolPromise;
 
+    const existingVendor = await pool.request()
+      .input('email', sql.VarChar, vendorEmailId)
+      .input('phone', sql.VarChar, vendorPhoneNo)
+      .query('SELECT Id FROM Mst_Vendor WHERE Vendor_EmailId = @email OR Vendor_Phone_No = @phone');
+
+    if (existingVendor.recordset.length > 0) {
+      return res.status(400).json({ error: 'Vendor with this email or phone already exists' });
+    }
+
     const result = await pool.request()
       .input('vendorName', sql.VarChar, vendorName)
       .input('vendorPhone', sql.VarChar, vendorPhoneNo)
@@ -304,7 +390,7 @@ app.post('/api/vendors', async (req, res) => {
       .input('vendorAddress', sql.VarChar, vendorAddress)
       .input('vendorAPI', sql.VarChar, vendorAPI || '')
       .input('isActive', sql.Bit, activeDeactive ? 1 : 0)
-      .input('createdBy', sql.Int, 1)
+      .input('createdBy', sql.VarChar, '1')
       .query(`
         INSERT INTO Mst_Vendor (
           Vendor_Name, Vendor_Phone_No, Vendor_EmailId, Vendor_Address,
@@ -377,6 +463,14 @@ app.post('/api/vehicles', async (req, res) => {
 
     const pool = await poolPromise;
 
+    const existingVehicle = await pool.request()
+      .input('vehicleNo', sql.VarChar, vehicleNo)
+      .query('SELECT Id FROM Mst_Vehicle WHERE Vehicle_No = @vehicleNo');
+
+    if (existingVehicle.recordset.length > 0) {
+      return res.status(400).json({ error: 'Vehicle with this number already exists' });
+    }
+
     const result = await pool.request()
       .input('vendorName', sql.VarChar, vendorName || '')
       .input('vendorPhone', sql.VarChar, vendorPhoneNo || '')
@@ -389,7 +483,7 @@ app.post('/api/vehicles', async (req, res) => {
       .input('insurance', sql.Date, insuranceExpireDate || null)
       .input('puc', sql.Date, pucExpireDate || null)
       .input('isActive', sql.Bit, activeDeactive ? 1 : 0)
-      .input('createdBy', sql.Int, 1)
+      .input('createdBy', sql.VarChar, '1')
       .query(`
         INSERT INTO Mst_Vehicle (
           Vendor_Name, Vendor_Phone_No, Vendor_EmailId, Vendor_Address,
@@ -466,6 +560,15 @@ app.post('/api/drivers', async (req, res) => {
 
     const pool = await poolPromise;
 
+    const existingDriver = await pool.request()
+      .input('phone', sql.VarChar, phone)
+      .input('license', sql.VarChar, licenseNumber)
+      .query('SELECT Id FROM Mst_Driver WHERE Driver_Phone_No = @phone OR DL_No = @license');
+
+    if (existingDriver.recordset.length > 0) {
+      return res.status(400).json({ error: 'Driver with this phone or license number already exists' });
+    }
+
     const result = await pool.request()
       .input('driverName', sql.VarChar, driverName)
       .input('driverPhone', sql.VarChar, phone)
@@ -474,12 +577,12 @@ app.post('/api/drivers', async (req, res) => {
       .input('emergencyPhone', sql.VarChar, emergencyPhone || '')
       .input('gender', sql.VarChar, gender || '')
       .input('dob', sql.Date, dob || null)
-      .input('experience', sql.Int, parseInt(experience) || 0)
+      .input('experience', sql.VarChar, experience.toString())
       .input('dlNo', sql.VarChar, licenseNumber)
       .input('dlExpire', sql.Date, expiryDate || null)
       .input('isActive', sql.Bit, 1)
       .input('isAvailable', sql.Bit, 1)
-      .input('createdBy', sql.Int, 1)
+      .input('createdBy', sql.VarChar, '1')
       .query(`
         INSERT INTO Mst_Driver (
           Driver_Name, Driver_Phone_No, Driver_Address,
@@ -548,26 +651,43 @@ app.post('/api/routes', async (req, res) => {
       estimatedTimeMinutes, isActive = true, stops = []
     } = req.body;
 
-    if (!routeId || !name || !origin || !destination) {
-      return res.status(400).json({ error: 'Route ID, name, origin, and destination are required' });
+    console.log('Received route data:', {
+      routeId, name, origin, destination, estimatedDistanceKm, estimatedTimeMinutes, stops: stops.length
+    });
+
+    if (!routeId || !name || !origin || !destination || !estimatedDistanceKm || !estimatedTimeMinutes) {
+      return res.status(400).json({ error: 'All route information fields are required' });
     }
 
     const pool = await poolPromise;
+
+    const existingRoute = await pool.request()
+      .input('routeNo', sql.VarChar, routeId)
+      .query('SELECT Id FROM Mst_Routes WHERE Route_No = @routeNo');
+
+    if (existingRoute.recordset.length > 0) {
+      return res.status(400).json({ error: 'Route with this ID already exists' });
+    }
+
     const transaction = new sql.Transaction(pool);
 
     try {
       await transaction.begin();
 
-      // Insert route
+      const totalMinutes = parseInt(estimatedTimeMinutes);
+      const hours = Math.floor(totalMinutes / 60);
+      const minutes = totalMinutes % 60;
+      const timeString = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:00`;
+
       const routeResult = await transaction.request()
         .input('routeNo', sql.VarChar, routeId)
         .input('routeName', sql.VarChar, name)
         .input('routeSource', sql.VarChar, origin)
         .input('routeDestination', sql.VarChar, destination)
-        .input('estimatedDistance', sql.Decimal(10, 2), parseFloat(estimatedDistanceKm) || 0)
-        .input('estimatedTime', sql.Int, parseInt(estimatedTimeMinutes) || 0)
+        .input('estimatedDistance', sql.Int, parseInt(estimatedDistanceKm))
+        .input('estimatedTime', sql.VarChar, timeString)
         .input('isActive', sql.Bit, isActive ? 1 : 0)
-        .input('createdBy', sql.Int, 1)
+        .input('createdBy', sql.VarChar, '1')
         .query(`
           INSERT INTO Mst_Routes (
             Route_No, Route_Name, Route_Source, Route_Destination,
@@ -583,19 +703,18 @@ app.post('/api/routes', async (req, res) => {
 
       const newRouteId = routeResult.recordset[0].Id;
 
-      // Insert stops if provided
+      let stopsAdded = 0;
       if (stops && stops.length > 0) {
         for (let i = 0; i < stops.length; i++) {
           const stop = stops[i];
           
-          // First insert the stop
           const stopResult = await transaction.request()
             .input('stopName', sql.VarChar, stop.stopName)
             .input('stopAddress', sql.VarChar, stop.address)
-            .input('stopLat', sql.Decimal(10, 8), parseFloat(stop.lat) || null)
-            .input('stopLong', sql.Decimal(11, 8), parseFloat(stop.lng) || null)
+            .input('stopLat', sql.VarChar, stop.lat.toString())
+            .input('stopLong', sql.VarChar, stop.lng.toString())
             .input('isActive', sql.Bit, 1)
-            .input('createdBy', sql.Int, 1)
+            .input('createdBy', sql.VarChar, '1')
             .query(`
               INSERT INTO Mst_Stoppage (
                 Stop_Name, Stop_Address, Stop_Lat, Stop_Long,
@@ -609,12 +728,11 @@ app.post('/api/routes', async (req, res) => {
 
           const stoppageId = stopResult.recordset[0].Id;
 
-          // Then map the stop to the route
           await transaction.request()
             .input('routeId', sql.Int, newRouteId)
             .input('stoppageId', sql.Int, stoppageId)
             .input('isActive', sql.Bit, 1)
-            .input('createdBy', sql.Int, 1)
+            .input('createdBy', sql.VarChar, '1')
             .query(`
               INSERT INTO Mstmap_Route_Stoppage (
                 Route_Id, Stoppage_Id, IsActive, Created_By, Created_at
@@ -622,6 +740,8 @@ app.post('/api/routes', async (req, res) => {
                 @routeId, @stoppageId, @isActive, @createdBy, GETDATE()
               );
             `);
+
+          stopsAdded++;
         }
       }
 
@@ -631,7 +751,7 @@ app.post('/api/routes', async (req, res) => {
         success: true,
         message: 'Route created successfully',
         routeId: newRouteId,
-        stopsAdded: stops.length
+        stopsAdded: stopsAdded
       });
 
     } catch (error) {
@@ -641,7 +761,10 @@ app.post('/api/routes', async (req, res) => {
 
   } catch (error) {
     console.error('Create route error:', error);
-    res.status(500).json({ error: 'Failed to create route' });
+    res.status(500).json({ 
+      error: 'Failed to create route',
+      details: error.message
+    });
   }
 });
 
@@ -651,23 +774,46 @@ app.get('/api/routes', async (req, res) => {
     const pool = await poolPromise;
     const result = await pool.request().query(`
       SELECT 
-        Id, Route_No, Route_Name, Route_Source, Route_Destination,
-        Eastimated_Distance, Eastimated_Time, IsActive, Created_at
-      FROM Mst_Routes
-      ORDER BY Created_at DESC
+        r.Id, r.Route_No, r.Route_Name, r.Route_Source, r.Route_Destination,
+        r.Eastimated_Distance, r.Eastimated_Time, r.IsActive, r.Created_at,
+        COUNT(mrs.Stoppage_Id) as StopCount
+      FROM Mst_Routes r
+      LEFT JOIN Mstmap_Route_Stoppage mrs ON r.Id = mrs.Route_Id AND mrs.IsActive = 1
+      GROUP BY r.Id, r.Route_No, r.Route_Name, r.Route_Source, r.Route_Destination,
+               r.Eastimated_Distance, r.Eastimated_Time, r.IsActive, r.Created_at
+      ORDER BY r.Created_at DESC
     `);
 
-    const routes = result.recordset.map(route => ({
-      id: route.Id,
-      routeNo: route.Route_No,
-      name: route.Route_Name,
-      source: route.Route_Source,
-      destination: route.Route_Destination,
-      distance: `${route.Eastimated_Distance} km`,
-      duration: `${route.Eastimated_Time} mins`,
-      status: route.IsActive ? 'Active' : 'Inactive',
-      createdAt: route.Created_at
-    }));
+    const routes = result.recordset.map(route => {
+      let durationMinutes = 0;
+      if (route.Eastimated_Time) {
+        const timeStr = route.Eastimated_Time.toString();
+        
+        if (timeStr.includes(':')) {
+          const timeParts = timeStr.split(':');
+          if (timeParts.length >= 2) {
+            const hours = parseInt(timeParts[0]) || 0;
+            const minutes = parseInt(timeParts[1]) || 0;
+            durationMinutes = hours * 60 + minutes;
+          }
+        } else {
+          durationMinutes = parseInt(timeStr) || 0;
+        }
+      }
+
+      return {
+        id: route.Id,
+        routeNo: route.Route_No,
+        name: route.Route_Name,
+        source: route.Route_Source,
+        destination: route.Route_Destination,
+        distance: `${route.Eastimated_Distance} km`,
+        duration: `${durationMinutes} mins`,
+        status: route.IsActive ? 'Active' : 'Inactive',
+        stopCount: route.StopCount,
+        createdAt: route.Created_at
+      };
+    });
 
     res.json({ success: true, data: routes });
   } catch (error) {
@@ -678,11 +824,11 @@ app.get('/api/routes', async (req, res) => {
 
 // ===================== CAB REQUEST ROUTES =====================
 
-// Create Cab Request
-app.post('/api/cab-requests', async (req, res) => {
+// Create Cab Request - FIXED VERSION
+app.post('/api/cab-requests', authenticateToken, async (req, res) => {
   try {
     const {
-      userId = 1, pickupLocation, pickupLat, pickupLng,
+      pickupLocation, pickupLat, pickupLng,
       destination, destinationLat, destinationLng,
       requestedDateTime, contactNumber
     } = req.body;
@@ -692,6 +838,7 @@ app.post('/api/cab-requests', async (req, res) => {
     }
 
     const pool = await poolPromise;
+    const userId = req.user.userId; // Get user ID from the authenticated token
 
     const result = await pool.request()
       .input('userId', sql.Int, userId)
@@ -703,7 +850,7 @@ app.post('/api/cab-requests', async (req, res) => {
       .input('destLong', sql.Decimal(11, 8), parseFloat(destinationLng) || null)
       .input('requestedDateTime', sql.DateTime, new Date(requestedDateTime))
       .input('status', sql.VarChar, 'PENDING')
-      .input('createdBy', sql.Int, userId)
+      .input('createdBy', sql.VarChar, req.user.name || `User-${userId}`)
       .query(`
         INSERT INTO Cab_Requests (
           User_Id, Pickup_Location, Pickup_Lat, Pickup_Long,
@@ -763,6 +910,145 @@ app.get('/api/cab-requests', async (req, res) => {
   }
 });
 
+// Update Cab Request Status and Assign Driver/Vehicle
+app.put('/api/cab-requests/:id', authenticateToken, checkRole(['admin', 'dispatcher']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, driverId, vehicleId, adminNotes } = req.body;
+    const adminId = req.user.userId;
+
+    const pool = await poolPromise;
+    
+    // Update the cab request status and assignment
+    const result = await pool.request()
+      .input('id', sql.Int, id)
+      .input('status', sql.NVarChar(50), status)
+      .input('driverId', sql.Int, driverId || null)
+      .input('vehicleId', sql.Int, vehicleId || null)
+      .input('adminId', sql.Int, adminId)
+      .input('adminNotes', sql.NVarChar(sql.MAX), adminNotes || null)
+      .query(`
+        UPDATE Cab_Requests
+        SET Status = @status,
+            Driver_Id = @driverId,
+            Vehicle_Id = @vehicleId,
+            Admin_Notes = @adminNotes,
+            Updated_By = @adminId,
+            Updated_At = GETDATE()
+        WHERE Id = @id
+        
+        SELECT cr.*, 
+               u.U_Name as UserName,
+               d.Driver_Name as DriverName,
+               v.Vehicle_No as VehicleNumber
+        FROM Cab_Requests cr
+        LEFT JOIN Users u ON cr.User_Id = u.Id
+        LEFT JOIN Mst_Driver d ON cr.Driver_Id = d.Id
+        LEFT JOIN Mst_Vehicle v ON cr.Vehicle_Id = v.Id
+        WHERE cr.Id = @id
+      `);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'Cab request not found' });
+    }
+
+    const updatedRequest = {
+      id: result.recordset[0].Id,
+      status: result.recordset[0].Status,
+      pickupLocation: result.recordset[0].Pickup_Location,
+      destination: result.recordset[0].Destination,
+      requestedTime: result.recordset[0].Requested_DateTime,
+      status: result.recordset[0].Status,
+      driverId: result.recordset[0].Driver_Id,
+      driverName: result.recordset[0].DriverName,
+      vehicleId: result.recordset[0].Vehicle_Id,
+      vehicleNumber: result.recordset[0].VehicleNumber,
+      adminNotes: result.recordset[0].Admin_Notes,
+      updatedAt: result.recordset[0].Updated_At,
+      updatedBy: result.recordset[0].Updated_By
+    };
+
+    res.json({ success: true, data: updatedRequest });
+  } catch (error) {
+    console.error('Update cab request error:', error);
+    res.status(500).json({ error: 'Failed to update cab request' });
+  }
+});
+
+// Update Cab Request Status
+app.patch('/api/cab-requests/:id/status', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    const updatedBy = req.user.username || 'system';
+
+    // Input validation
+    if (!status) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Status is required' 
+      });
+    }
+
+    // Validate status value
+    const validStatuses = ['PENDING', 'ACCEPTED', 'REJECTED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status. Must be one of: ${validStatuses.join(', ')}`
+      });
+    }
+
+    // Validate ID
+    if (isNaN(parseInt(id))) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid request ID'
+      });
+    }
+
+    // Log the update attempt
+    console.log(`Updating request ${id} to status ${status} by ${updatedBy}`);
+
+    const result = await updateCabRequestStatus(id, status, updatedBy);
+    
+    if (result.success) {
+      console.log(`Successfully updated request ${id} to status ${status}`);
+      return res.status(200).json({
+        success: true,
+        message: 'Request status updated successfully',
+        data: {
+          requestId: id,
+          newStatus: status,
+          updatedBy,
+          updatedAt: new Date().toISOString()
+        }
+      });
+    } else {
+      console.warn(`Failed to update request ${id}: ${result.message}`);
+      return res.status(404).json({
+        success: false,
+        message: result.message || 'Failed to update request status',
+        requestId: id
+      });
+    }
+  } catch (error) {
+    console.error('Error updating request status:', {
+      error: error.message,
+      stack: error.stack,
+      params: req.params,
+      body: req.body,
+      user: req.user
+    });
+    
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 // ===================== DASHBOARD ROUTES =====================
 
 // Get Dashboard Stats
@@ -770,12 +1056,13 @@ app.get('/api/dashboard/stats', async (req, res) => {
   try {
     const pool = await poolPromise;
     
-    const [users, vehicles, drivers, routes, requests] = await Promise.all([
+    const [users, vehicles, drivers, routes, requests, vendors] = await Promise.all([
       pool.request().query('SELECT COUNT(*) as count FROM Users WHERE IsActive = 1'),
       pool.request().query('SELECT COUNT(*) as count FROM Mst_Vehicle WHERE IsActive = 1'),
       pool.request().query('SELECT COUNT(*) as count FROM Mst_Driver WHERE IsActive = 1'),
       pool.request().query('SELECT COUNT(*) as count FROM Mst_Routes WHERE IsActive = 1'),
-      pool.request().query('SELECT COUNT(*) as count FROM Cab_Requests WHERE Status = \'PENDING\'')
+      pool.request().query('SELECT COUNT(*) as count FROM Cab_Requests WHERE Status = \'PENDING\''),
+      pool.request().query('SELECT COUNT(*) as count FROM Mst_Vendor WHERE IsActive = 1')
     ]);
 
     res.json({
@@ -785,7 +1072,8 @@ app.get('/api/dashboard/stats', async (req, res) => {
         vehicles: vehicles.recordset[0].count,
         drivers: drivers.recordset[0].count,
         routes: routes.recordset[0].count,
-        activeRequests: requests.recordset[0].count
+        activeRequests: requests.recordset[0].count,
+        vendors: vendors.recordset[0].count
       }
     });
 
@@ -802,7 +1090,7 @@ app.get('/api/dashboard/activities', async (req, res) => {
     const result = await pool.request().query(`
       SELECT TOP 10
         'Cab Request' as type,
-        CONCAT('New booking from ', u.U_Name, ' to ', cr.Destination) as message,
+        CONCAT('New booking from ', ISNULL(u.U_Name, 'Unknown User'), ' to ', cr.Destination) as message,
         cr.Created_at as timestamp
       FROM Cab_Requests cr
       LEFT JOIN Users u ON cr.User_Id = u.Id
@@ -822,6 +1110,9 @@ app.get('/api/dashboard/activities', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch recent activities' });
   }
 });
+
+
+
 
 // ===================== HEALTH CHECK =====================
 
@@ -861,6 +1152,85 @@ function getTimeAgo(date) {
   return `${diffInDays}d`;
 }
 
+// Create demo users function
+const createDemoUsers = async () => {
+  try {
+    const pool = await poolPromise;
+    
+    const existingUsers = await pool.request()
+      .query("SELECT COUNT(*) as count FROM Users WHERE U_Name IN ('admin', 'employee', 'manager')");
+    
+    if (existingUsers.recordset[0].count > 0) {
+      console.log('Demo users already exist');
+      return;
+    }
+    
+    const demoUsers = [
+      {
+        name: 'admin',
+        email: 'admin@commutex.com',
+        phone: '9999999999',
+        password: 'admin',
+        role: 1,
+        regisNo: 'ADMIN001',
+        departmentId: 1
+      },
+      {
+        name: 'employee',
+        email: 'employee@commutex.com', 
+        phone: '8888888888',
+        password: 'employee',
+        role: 2,
+        regisNo: 'EMP001',
+        departmentId: 2
+      },
+      {
+        name: 'manager',
+        email: 'manager@commutex.com',
+        phone: '7777777777', 
+        password: 'manager',
+        role: 3,
+        regisNo: 'MGR001',
+        departmentId: 1
+      }
+    ];
+    
+    for (const user of demoUsers) {
+      const hashedPassword = await bcrypt.hash(user.password, 10);
+      
+      await pool.request()
+        .input('departmentId', sql.Int, user.departmentId)
+        .input('regisNo', sql.VarChar, user.regisNo)
+        .input('uName', sql.VarChar, user.name)
+        .input('email', sql.VarChar, user.email)
+        .input('mobile', sql.VarChar, user.phone)
+        .input('password', sql.VarChar, user.password)
+        .input('hashPassword', sql.VarChar, hashedPassword)
+        .input('address', sql.VarChar, 'Demo Address')
+        .input('roleId', sql.Int, user.role)
+        .input('isActive', sql.Bit, 1)
+        .input('isAvailable', sql.Bit, 1)
+        .input('isAccountVerified', sql.Bit, 1)
+        .input('createdBy', sql.VarChar, '1')
+        .query(`
+          INSERT INTO Users (
+            Department_Id, Regis_No, U_Name, Email_ID, Mobile_No,
+            u_Password, Hash_Password, U_Address, Role_Id,
+            IsActive, IsAvailable, IsAccount_Verified, Created_By, Created_at
+          ) VALUES (
+            @departmentId, @regisNo, @uName, @email, @mobile,
+            @password, @hashPassword, @address, @roleId,
+            @isActive, @isAvailable, @isAccountVerified, @createdBy, GETDATE()
+          )
+        `);
+    }
+    
+    console.log('Demo users created successfully');
+  } catch (error) {
+    console.error('Error creating demo users:', error);
+  }
+};
+
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error('Server Error:', error);
@@ -879,14 +1249,19 @@ app.use('*', (req, res) => {
 const startServer = async () => {
   try {
     await initializeDatabase();
+    await createDemoUsers();
     
     app.listen(PORT, () => {
-      console.log(`🚀 Server running on http://localhost:${PORT}`);
-      console.log(`📊 API Health: http://localhost:${PORT}/api/health`);
-      console.log(`🔗 Database: ${dbConfig.server}:${dbConfig.port}/${dbConfig.database}`);
+      console.log(`Server running on http://localhost:${PORT}`);
+      console.log(`API Health: http://localhost:${PORT}/api/health`);
+      console.log(`Database: ${dbConfig.server}:${dbConfig.port}/${dbConfig.database}`);
+      console.log('Demo credentials:');
+      console.log('- Admin: username=admin, password=admin');
+      console.log('- Employee: username=employee, password=employee');
+      console.log('- Manager: username=manager, password=manager');
     });
   } catch (error) {
-    console.error('❌ Failed to start server:', error);
+    console.error('Failed to start server:', error);
     process.exit(1);
   }
 };
