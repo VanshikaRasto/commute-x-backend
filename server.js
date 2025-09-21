@@ -4,13 +4,16 @@ const cors = require('cors');
 const sql = require('mssql');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+
 // Change this line at the top of server.js
 const updateCabRequestStatus = require('./services/updateRequestStatus');
 
 require('dotenv').config();
 
-const app = express();
-const PORT = process.env.PORT || 5000;
+
+// App Setup
+const app = express();  // express app setup
+const PORT = process.env.PORT || 5000; //kis port pe chlega
 
 // Middleware
 app.use(cors({
@@ -21,6 +24,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Database Configuration
+
 const dbConfig = {
   user: process.env.DB_USER || 'sa',
   password: process.env.DB_PASSWORD || 'Galaxy@3017',
@@ -35,13 +39,14 @@ const dbConfig = {
     requestTimeout: 30000
   },
   pool: {
-    max: 10,
+    max: 10,   //max kitne connections open rhenge
     min: 0,
-    idleTimeoutMillis: 30000
+    idleTimeoutMillis: 30000       // 30 sec agar koi connection idle h toh kitne time baa  close hojayega
   }
 };
 
 // Global database pool
+
 let poolPromise;
 
 // Initialize Database Connection
@@ -86,6 +91,58 @@ const checkRole = (allowedRoles) => {
     }
   };
 };
+// Add these functions after your existing handlers (like handleChange, handleSubmit, etc.)
+
+const handleEditDriver = (driver) => {
+  setFormData({
+    driverName: driver.driverName || driver.name || driver.driver_name || '',
+    phone: driver.phone || driver.phoneNumber || driver.phone_number || '',
+    email: driver.email || '',
+    address: driver.address || '',
+    dob: driver.dob ? formatDateForInput(driver.dob) : '',
+    age: driver.age || '',
+    gender: driver.gender || '',
+    licenseNumber: driver.licenseNumber || driver.license_number || '',
+    issueDate: driver.issueDate ? formatDateForInput(driver.issueDate) : '',
+    expiryDate: driver.expiryDate ? formatDateForInput(driver.expiryDate) : '',
+    experience: driver.experience || '',
+    emergencyName: driver.emergencyName || driver.emergency_contact_name || '',
+    emergencyPhone: driver.emergencyPhone || driver.emergency_contact_phone || '',
+    joiningDate: driver.joiningDate ? formatDateForInput(driver.joiningDate) : new Date().toISOString().split('T')[0]
+  });
+  setShowDriversList(false); // Hide the list to show the form
+  window.scrollTo({ top: 0, behavior: 'smooth' }); // Scroll to top
+};
+
+const handleDeleteDriver = async (driverId) => {
+  if (window.confirm('Are you sure you want to delete this driver?')) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/drivers/${driverId}`, {
+        method: 'DELETE',
+      });
+      
+      const data = await response.json();
+      
+      if (response.ok && data.success) {
+        setSuccessMessage('Driver deleted successfully');
+        fetchDrivers(); // Refresh the list
+      } else {
+        setErrorMessage(data.error || 'Failed to delete driver');
+      }
+    } catch (error) {
+      console.error('Delete driver error:', error);
+      setErrorMessage('Failed to delete driver. Please try again.');
+    }
+  }
+};
+
+// Add this helper function for date formatting
+const formatDateForInput = (dateString) => {
+  if (!dateString) return '';
+  const date = new Date(dateString);
+  return date.toISOString().split('T')[0];
+};
+
 
 // ===================== AUTH ROUTES =====================
 
@@ -166,57 +223,286 @@ app.post('/api/auth/logout', authenticateToken, async (req, res) => {
   }
 });
 
-// ===================== USER ROUTES =====================
+// ===================== USER ROUTES =====================//
 
-// Create User
+
+
+// Create New User
 app.post('/api/users', async (req, res) => {
   try {
     const {
-      name, email, phone, password, address, latitude, longitude,
-      type = 'user', status = 'Active',
+      name, email, phone, address, latitude, longitude,
       departmentId, regisNo, contactNo, deskExtNo, deskNo,
-      roleId, isAvailable = true, isAccountVerified = true
+      roleId, status, isAvailable, isAccountVerified, password
     } = req.body;
 
-    console.log('Received registration data:', {
-      name, email, phone, departmentId, regisNo, roleId, address
-    });
+    console.log('Creating new user:', req.body);
 
-    if (!name || !email || !phone || !password || !address || !departmentId || !regisNo) {
+    // Validate required fields - based on schema NOT NULL constraints
+    if (!name || !departmentId || !regisNo) {
       return res.status(400).json({ 
         error: 'All required fields must be provided',
-        required: ['name', 'email', 'phone', 'password', 'address', 'departmentId', 'regisNo']
+        required: ['name', 'departmentId', 'regisNo']
       });
     }
 
     const pool = await poolPromise;
 
-    // Check if user already exists
-    const existingUser = await pool.request()
-      .input('email', sql.VarChar, email)
-      .input('phone', sql.VarChar, phone)
+    // Check for duplicate email, phone, regisNo
+    const duplicateCheck = await pool.request()
+      .input('email', sql.VarChar, email || '')
+      .input('phone', sql.VarChar, phone || '')
       .input('regisNo', sql.VarChar, regisNo)
       .query(`
         SELECT Id, Email_ID, Mobile_No, Regis_No 
         FROM Users 
-        WHERE Email_ID = @email OR Mobile_No = @phone OR Regis_No = @regisNo
+        WHERE (Email_ID = @email AND @email != '') OR (Mobile_No = @phone AND @phone != '') OR Regis_No = @regisNo
       `);
 
-    if (existingUser.recordset.length > 0) {
-      const existing = existingUser.recordset[0];
-      if (existing.Email_ID === email) {
-        return res.status(400).json({ error: 'User with this email already exists' });
+    if (duplicateCheck.recordset.length > 0) {
+      const duplicate = duplicateCheck.recordset[0];
+      if (duplicate.Email_ID === email && email) {
+        return res.status(400).json({ error: 'Email already exists' });
       }
-      if (existing.Mobile_No === phone) {
-        return res.status(400).json({ error: 'User with this phone number already exists' });
+      if (duplicate.Mobile_No === phone && phone) {
+        return res.status(400).json({ error: 'Phone number already exists' });
       }
-      if (existing.Regis_No === regisNo) {
-        return res.status(400).json({ error: 'User with this registration number already exists' });
+      if (duplicate.Regis_No === regisNo) {
+        return res.status(400).json({ error: 'Registration number already exists' });
       }
     }
 
-    // Hash password
-    const hashedPassword = await bcrypt.hash(password, 10);
+    // Calculate distance from office (Delhi coordinates)
+    const officeLat = 28.6139;
+    const officeLng = 77.2090;
+    const userLat = parseFloat(latitude);
+    const userLng = parseFloat(longitude);
+
+    let distance = 0;
+    if (userLat && userLng) {
+      const R = 6371; // Earth's radius in kilometers
+      const dLat = (userLat - officeLat) * Math.PI / 180;
+      const dLon = (userLng - officeLng) * Math.PI / 180;
+      const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(officeLat * Math.PI/180) * Math.cos(userLat * Math.PI/180) *
+                Math.sin(dLon/2) * Math.sin(dLon/2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      distance = (R * c).toFixed(2);
+    }
+
+    // Hash password if provided (you should use bcrypt in production)
+    const plainPassword = password || 'defaultPassword123';
+    const hashedPassword = password || 'defaultHashedPassword123'; // Replace with proper hashing
+
+    // Insert new user
+    const result = await pool.request()
+      .input('departmentId', sql.Int, parseInt(departmentId))
+      .input('regisNo', sql.VarChar, regisNo)
+      .input('uName', sql.VarChar, name)
+      .input('uAddress', sql.VarChar, address || null)
+      .input('latAddress', sql.VarChar, latitude || null)
+      .input('longAddress', sql.VarChar, longitude || null)
+      .input('distance', sql.Decimal(5, 2), distance)
+      .input('uPassword', sql.VarChar, plainPassword)
+      .input('emailId', sql.VarChar, email || null)
+      .input('mobileNo', sql.VarChar, phone || null)
+      .input('contactNo', sql.VarChar, contactNo || null)
+      .input('deskExtNo', sql.VarChar, deskExtNo || null)
+      .input('deskNo', sql.VarChar, deskNo || null)
+      .input('hashPassword', sql.VarChar, hashedPassword)
+      .input('isLoggedIn', sql.Bit, 0)
+      .input('isAccountVerified', sql.Bit, isAccountVerified ? 1 : 0)
+      .input('isActive', sql.Bit, status === 'Active' ? 1 : 0)
+      .input('isAvailable', sql.Bit, isAvailable ? 1 : 0)
+      .input('roleId', sql.Int, parseInt(roleId) || 2)
+      .input('createdBy', sql.VarChar, 'System') // You can change this to current user
+      .query(`
+        INSERT INTO Users (
+          Department_Id, Regis_No, U_Name, U_Address, Lat_Address, Long_Address, Distance,
+          u_Password, Email_ID, Mobile_No, Contact_No, Desk_ExtNo, Desk_No,
+          Hash_Password, IsLoggedIn, IsAccount_Verified, IsActive, IsAvailable, 
+          Role_Id, Created_By, Created_at, Updated_at
+        ) 
+        OUTPUT INSERTED.Id
+        VALUES (
+          @departmentId, @regisNo, @uName, @uAddress, @latAddress, @longAddress, @distance,
+          @uPassword, @emailId, @mobileNo, @contactNo, @deskExtNo, @deskNo,
+          @hashPassword, @isLoggedIn, @isAccountVerified, @isActive, @isAvailable,
+          @roleId, @createdBy, GETDATE(), GETDATE()
+        )
+      `);
+
+    const newUserId = result.recordset[0].Id;
+
+    res.status(201).json({
+      success: true,
+      message: 'User created successfully',
+      data: {
+        id: newUserId,
+        regisNo: regisNo,
+        name,
+        email,
+        phone,
+        distance: `${distance} km`,
+        departmentId: parseInt(departmentId),
+        roleId: parseInt(roleId) || 2,
+        status: status || 'Active'
+      }
+    });
+
+  } catch (error) {
+    console.error('Create user error:', error);
+    
+    if (error.number === 547) {
+      res.status(400).json({ 
+        error: 'Invalid reference: Department ID does not exist'
+      });
+    } else if (error.number === 2627) {
+      res.status(400).json({ 
+        error: 'Duplicate entry: User with this information already exists'
+      });
+    } else {
+      res.status(500).json({ 
+        error: 'Failed to create user',
+        details: error.message
+      });
+    }
+  }
+});
+
+// Get all users
+app.get('/api/users', async (req, res) => {
+  try {
+    const pool = await poolPromise;
+    const result = await pool.request().query(`
+      SELECT 
+        Id, U_Name, Email_ID, Mobile_No, Contact_No, 
+        Department_Id, Role_Id, IsActive, Created_at
+      FROM Users
+      WHERE IsActive = 1
+      ORDER BY Created_at DESC
+    `);
+
+    res.json({ 
+      success: true,
+      data: result.recordset 
+    });
+  } catch (error) {
+    console.error('Get users error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch users' 
+    });
+  }
+});
+
+// Get Single User
+app.get('/api/users/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input('id', sql.Int, parseInt(id))
+      .query(`
+        SELECT 
+          Id, Department_Id, Regis_No, U_Name, Email_ID, Mobile_No, Contact_No,
+          Desk_ExtNo, Desk_No, U_Address, Lat_Address, Long_Address, Distance, 
+          IsActive, IsAvailable, Role_Id, IsAccount_Verified, Created_at, Last_Login_at
+        FROM Users
+        WHERE Id = @id
+      `);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = result.recordset[0];
+    const userData = {
+      id: user.Id,
+      departmentId: user.Department_Id,
+      regisNo: user.Regis_No,
+      name: user.U_Name,
+      email: user.Email_ID,
+      phone: user.Mobile_No,
+      contactNo: user.Contact_No,
+      deskExtNo: user.Desk_ExtNo,
+      deskNo: user.Desk_No,
+      address: user.U_Address,
+      latitude: user.Lat_Address,
+      longitude: user.Long_Address,
+      distance: user.Distance,
+      status: user.IsActive ? 'Active' : 'Inactive',
+      isAvailable: user.IsAvailable,
+      role: user.Role_Id === 1 ? 'Admin' : user.Role_Id === 2 ? 'Employee' : user.Role_Id === 3 ? 'Manager' : 'Guest',
+      roleId: user.Role_Id,
+      isVerified: user.IsAccount_Verified,
+      joinDate: user.Created_at,
+      lastLogin: user.Last_Login_at
+    };
+
+    res.json({ success: true, data: userData });
+  } catch (error) {
+    console.error('Get user error:', error);
+    res.status(500).json({ error: 'Failed to fetch user' });
+  }
+});
+
+// Update User
+app.put('/api/users/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      name, email, phone, address, latitude, longitude,
+      departmentId, regisNo, contactNo, deskExtNo, deskNo,
+      roleId, status, isAvailable, isAccountVerified
+    } = req.body;
+
+    console.log('Updating user:', id, req.body);
+
+    if (!name || !email || !phone || !address || !departmentId || !regisNo) {
+      return res.status(400).json({ 
+        error: 'All required fields must be provided',
+        required: ['name', 'email', 'phone', 'address', 'departmentId', 'regisNo']
+      });
+    }
+
+    const pool = await poolPromise;
+
+    // Check if user exists
+    const existingUser = await pool.request()
+      .input('id', sql.Int, parseInt(id))
+      .query('SELECT Id FROM Users WHERE Id = @id');
+
+    if (existingUser.recordset.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Check for duplicate email, phone, regisNo (excluding current user)
+    const duplicateCheck = await pool.request()
+      .input('email', sql.VarChar, email)
+      .input('phone', sql.VarChar, phone)
+      .input('regisNo', sql.VarChar, regisNo)
+      .input('id', sql.Int, parseInt(id))
+      .query(`
+        SELECT Id, Email_ID, Mobile_No, Regis_No 
+        FROM Users 
+        WHERE (Email_ID = @email OR Mobile_No = @phone OR Regis_No = @regisNo) 
+        AND Id != @id
+      `);
+
+    if (duplicateCheck.recordset.length > 0) {
+      const duplicate = duplicateCheck.recordset[0];
+      if (duplicate.Email_ID === email) {
+        return res.status(400).json({ error: 'Email already exists for another user' });
+      }
+      if (duplicate.Mobile_No === phone) {
+        return res.status(400).json({ error: 'Phone number already exists for another user' });
+      }
+      if (duplicate.Regis_No === regisNo) {
+        return res.status(400).json({ error: 'Registration number already exists for another user' });
+      }
+    }
 
     // Calculate distance from office
     const officeLat = 28.6139;
@@ -236,8 +522,9 @@ app.post('/api/users', async (req, res) => {
       distance = (R * c).toFixed(2);
     }
 
-    // Insert user
+    // Update user
     const result = await pool.request()
+      .input('id', sql.Int, parseInt(id))
       .input('departmentId', sql.Int, parseInt(departmentId))
       .input('regisNo', sql.VarChar, regisNo)
       .input('uName', sql.VarChar, name)
@@ -246,41 +533,41 @@ app.post('/api/users', async (req, res) => {
       .input('contactNo', sql.VarChar, contactNo || phone)
       .input('deskExtNo', sql.VarChar, deskExtNo || null)
       .input('deskNo', sql.VarChar, deskNo || null)
-      .input('password', sql.VarChar, password)
-      .input('hashPassword', sql.VarChar, hashedPassword)
       .input('address', sql.VarChar, address)
       .input('lat', sql.Decimal(10, 8), userLat || null)
       .input('lng', sql.Decimal(11, 8), userLng || null)
       .input('distance', sql.Decimal(10, 2), distance)
       .input('isActive', sql.Bit, status === 'Active' ? 1 : 0)
       .input('isAvailable', sql.Bit, isAvailable ? 1 : 0)
-      .input('roleId', sql.Int, parseInt(roleId) || (type === 'admin' ? 1 : 2))
-      .input('isLoggedIn', sql.Bit, 0)
+      .input('roleId', sql.Int, parseInt(roleId))
       .input('isAccountVerified', sql.Bit, isAccountVerified ? 1 : 0)
-      .input('createdBy', sql.VarChar, '1')
       .query(`
-        INSERT INTO Users (
-          Department_Id, Regis_No, U_Name, Email_ID, Mobile_No, Contact_No,
-          Desk_ExtNo, Desk_No, u_Password, Hash_Password, U_Address, Lat_Address, Long_Address, Distance,
-          IsActive, IsAvailable, Role_Id, IsLoggedIn, IsAccount_Verified,
-          Created_By, Created_at
-        ) VALUES (
-          @departmentId, @regisNo, @uName, @email, @mobile, @contactNo,
-          @deskExtNo, @deskNo, @password, @hashPassword, @address, @lat, @lng, @distance,
-          @isActive, @isAvailable, @roleId, @isLoggedIn, @isAccountVerified,
-          @createdBy, GETDATE()
-        );
-        SELECT SCOPE_IDENTITY() AS Id;
+        UPDATE Users SET 
+          Department_Id = @departmentId,
+          Regis_No = @regisNo,
+          U_Name = @uName,
+          Email_ID = @email,
+          Mobile_No = @mobile,
+          Contact_No = @contactNo,
+          Desk_ExtNo = @deskExtNo,
+          Desk_No = @deskNo,
+          U_Address = @address,
+          Lat_Address = @lat,
+          Long_Address = @lng,
+          Distance = @distance,
+          IsActive = @isActive,
+          IsAvailable = @isAvailable,
+          Role_Id = @roleId,
+          IsAccount_Verified = @isAccountVerified,
+          Updated_at = GETDATE()
+        WHERE Id = @id
       `);
 
-    const userId = result.recordset[0].Id;
-
-    res.status(201).json({
+    res.json({
       success: true,
-      message: 'User created successfully',
-      userId: userId,
+      message: 'User updated successfully',
       data: {
-        id: userId,
+        id: parseInt(id),
         regisNo: regisNo,
         name,
         email,
@@ -293,70 +580,224 @@ app.post('/api/users', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Create user error:', error);
+    console.error('Update user error:', error);
     
-    if (error.number === 515) {
-      res.status(500).json({ 
-        error: 'Database constraint error: Missing required field'
-      });
-    } else if (error.number === 2627) {
-      res.status(409).json({ 
-        error: 'Duplicate entry: User with this information already exists'
-      });
-    } else if (error.number === 547) {
+    if (error.number === 547) {
       res.status(400).json({ 
         error: 'Invalid reference: Department ID does not exist'
       });
     } else {
       res.status(500).json({ 
-        error: 'Failed to create user',
+        error: 'Failed to update user',
         details: error.message
       });
     }
   }
 });
 
-// Get All Users
-app.get('/api/users', async (req, res) => {
+// Delete User
+app.delete('/api/users/:id', async (req, res) => {
   try {
+    const { id } = req.params;
+
+    console.log('Deleting user:', id);
+
     const pool = await poolPromise;
-    const result = await pool.request().query(`
-      SELECT 
-        Id, Department_Id, Regis_No, U_Name, Email_ID, Mobile_No, Contact_No,
-        Desk_ExtNo, Desk_No, U_Address, Lat_Address, Long_Address, Distance, 
-        IsActive, IsAvailable, Role_Id, IsAccount_Verified, Created_at, Last_Login_at
-      FROM Users
-      ORDER BY Created_at DESC
-    `);
 
-    const users = result.recordset.map(user => ({
-      id: user.Id,
-      departmentId: user.Department_Id,
-      regisNo: user.Regis_No,
-      name: user.U_Name,
-      email: user.Email_ID,
-      phone: user.Mobile_No,
-      contactNo: user.Contact_No,
-      deskExtNo: user.Desk_ExtNo,
-      deskNo: user.Desk_No,
-      address: user.U_Address,
-      latitude: user.Lat_Address,
-      longitude: user.Long_Address,
-      distance: user.Distance,
-      status: user.IsActive ? 'Active' : 'Inactive',
-      isAvailable: user.IsAvailable,
-      role: user.Role_Id === 1 ? 'Admin' : user.Role_Id === 2 ? 'Employee' : user.Role_Id === 3 ? 'Manager' : 'Guest',
-      isVerified: user.IsAccount_Verified,
-      joinDate: user.Created_at,
-      lastLogin: user.Last_Login_at
-    }));
+    // Check if user exists
+    const existingUser = await pool.request()
+      .input('id', sql.Int, parseInt(id))
+      .query('SELECT Id, U_Name FROM Users WHERE Id = @id');
 
-    res.json({ success: true, data: users });
+    if (existingUser.recordset.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const userName = existingUser.recordset[0].U_Name;
+
+    // Delete user
+    await pool.request()
+      .input('id', sql.Int, parseInt(id))
+      .query('DELETE FROM Users WHERE Id = @id');
+
+    res.json({
+      success: true,
+      message: `User "${userName}" deleted successfully`
+    });
+
   } catch (error) {
-    console.error('Get users error:', error);
-    res.status(500).json({ error: 'Failed to fetch users' });
+    console.error('Delete user error:', error);
+    
+    if (error.number === 547) {
+      res.status(400).json({ 
+        error: 'Cannot delete user: User has related records in the system'
+      });
+    } else {
+      res.status(500).json({ 
+        error: 'Failed to delete user',
+        details: error.message
+      });
+    }
   }
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // ===================== VENDOR ROUTES =====================
 
@@ -446,6 +887,127 @@ app.get('/api/vendors', async (req, res) => {
   }
 });
 
+// Update Vendor
+app.put('/api/vendors/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      vendorName, vendorPhoneNo, vendorEmailId, vendorAddress,
+      vendorAPI, activeDeactive
+    } = req.body;
+
+    if (!vendorName || !vendorPhoneNo || !vendorEmailId || !vendorAddress) {
+      return res.status(400).json({ error: 'All required fields must be provided' });
+    }
+
+    const pool = await poolPromise;
+
+    // Check if vendor exists
+    const existingVendor = await pool.request()
+      .input('id', sql.Int, id)
+      .query('SELECT Id FROM Mst_Vendor WHERE Id = @id');
+
+    if (existingVendor.recordset.length === 0) {
+      return res.status(404).json({ error: 'Vendor not found' });
+    }
+
+    // Check for duplicate email or phone (excluding current vendor)
+    const duplicateCheck = await pool.request()
+      .input('email', sql.VarChar, vendorEmailId)
+      .input('phone', sql.VarChar, vendorPhoneNo)
+      .input('id', sql.Int, id)
+      .query(`
+        SELECT Id 
+        FROM Mst_Vendor 
+        WHERE (Vendor_EmailId = @email OR Vendor_Phone_No = @phone)
+        AND Id != @id
+      `);
+
+    if (duplicateCheck.recordset.length > 0) {
+      return res.status(400).json({ error: 'Email or phone number already in use by another vendor' });
+    }
+
+    // Update vendor
+    await pool.request()
+      .input('id', sql.Int, id)
+      .input('vendorName', sql.VarChar, vendorName)
+      .input('vendorPhone', sql.VarChar, vendorPhoneNo)
+      .input('vendorEmail', sql.VarChar, vendorEmailId)
+      .input('vendorAddress', sql.VarChar, vendorAddress)
+      .input('vendorAPI', sql.VarChar, vendorAPI || '')
+      .input('isActive', sql.Bit, activeDeactive ? 1 : 0)
+      .query(`
+        UPDATE Mst_Vendor SET
+          Vendor_Name = @vendorName,
+          Vendor_Phone_No = @vendorPhone,
+          Vendor_EmailId = @vendorEmail,
+          Vendor_Address = @vendorAddress,
+          Vendor_API = @vendorAPI,
+          IsActive = @isActive,
+          Updated_at = GETDATE()
+        WHERE Id = @id
+      `);
+
+    res.json({
+      success: true,
+      message: 'Vendor updated successfully',
+      vendorId: parseInt(id)
+    });
+
+  } catch (error) {
+    console.error('Update vendor error:', error);
+    res.status(500).json({ 
+      error: 'Failed to update vendor',
+      details: error.message 
+    });
+  }
+});
+// Delete Vendor
+app.delete('/api/vendors/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if vendor exists
+    const vendorCheck = await pool.request()
+      .input('id', sql.Int, id)
+      .query('SELECT Id, Vendor_Name FROM Mst_Vendor WHERE Id = @id');
+
+    if (vendorCheck.recordset.length === 0) {
+      return res.status(404).json({ error: 'Vendor not found' });
+    }
+
+    const vendorName = vendorCheck.recordset[0].Vendor_Name;
+
+    // Since we don't have a direct relationship, we'll proceed with deletion
+    // and let the database handle any foreign key constraints
+    try {
+      await pool.request()
+        .input('id', sql.Int, id)
+        .query('DELETE FROM Mst_Vendor WHERE Id = @id');
+
+      res.json({
+        success: true,
+        message: `Vendor "${vendorName}" deleted successfully`
+      });
+    } catch (error) {
+      if (error.number === 547) { // Foreign key constraint violation
+        return res.status(400).json({ 
+          error: 'Cannot delete vendor: This vendor has associated records in the system'
+        });
+      }
+      throw error; // Re-throw other errors
+    }
+
+  } catch (error) {
+    console.error('Delete vendor error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete vendor',
+      details: error.message 
+    });
+  }
+});
+
 // ===================== VEHICLE ROUTES =====================
 
 // Create Vehicle
@@ -454,15 +1016,21 @@ app.post('/api/vehicles', async (req, res) => {
     const {
       vendorName, vendorPhoneNo, vendorEmailId, vendorAddress,
       vehicleNo, vehicleType, hireType, vehicleModel,
-      insuranceExpireDate, pucExpireDate, activeDeactive = false
+      insurance, insuranceExpireDate, puc, pucExpireDate,
+      gpsImeiNo, activeDeactive = true
     } = req.body;
 
-    if (!vehicleNo || !vehicleType || !vehicleModel) {
-      return res.status(400).json({ error: 'Vehicle number, type, and model are required' });
+    // Required fields validation
+    if (!vendorName || !vendorPhoneNo || !vendorAddress || !vehicleNo || !vehicleType || !hireType) {
+      return res.status(400).json({ 
+        error: 'Required fields missing',
+        required: ['vendorName', 'vendorPhoneNo', 'vendorAddress', 'vehicleNo', 'vehicleType', 'hireType']
+      });
     }
 
     const pool = await poolPromise;
 
+    // Check duplicate vehicle
     const existingVehicle = await pool.request()
       .input('vehicleNo', sql.VarChar, vehicleNo)
       .query('SELECT Id FROM Mst_Vehicle WHERE Vehicle_No = @vehicleNo');
@@ -472,27 +1040,32 @@ app.post('/api/vehicles', async (req, res) => {
     }
 
     const result = await pool.request()
-      .input('vendorName', sql.VarChar, vendorName || '')
-      .input('vendorPhone', sql.VarChar, vendorPhoneNo || '')
-      .input('vendorEmail', sql.VarChar, vendorEmailId || '')
-      .input('vendorAddress', sql.VarChar, vendorAddress || '')
+      .input('vendorName', sql.VarChar, vendorName)
+      .input('vendorPhone', sql.VarChar, vendorPhoneNo)
+      .input('vendorEmail', sql.VarChar, vendorEmailId || null)
+      .input('vendorAddress', sql.VarChar, vendorAddress)
       .input('vehicleNo', sql.VarChar, vehicleNo)
       .input('vehicleType', sql.VarChar, vehicleType)
-      .input('hireType', sql.VarChar, hireType || 'Custom')
-      .input('vehicleModel', sql.VarChar, vehicleModel)
-      .input('insurance', sql.Date, insuranceExpireDate || null)
-      .input('puc', sql.Date, pucExpireDate || null)
+      .input('hireType', sql.VarChar, hireType)
+      .input('vehicleModel', sql.VarChar, vehicleModel || null)
+      .input('insurance', sql.Bit, insurance ? 1 : 0)
+      .input('insuranceExpire', sql.Date, insuranceExpireDate || null)
+      .input('puc', sql.Bit, puc ? 1 : 0)
+      .input('pucExpire', sql.Date, pucExpireDate || null)
+      .input('gpsImei', sql.VarChar, gpsImeiNo || null)
       .input('isActive', sql.Bit, activeDeactive ? 1 : 0)
-      .input('createdBy', sql.VarChar, '1')
+      .input('createdBy', sql.VarChar, 'System')
       .query(`
         INSERT INTO Mst_Vehicle (
           Vendor_Name, Vendor_Phone_No, Vendor_EmailId, Vendor_Address,
           Vehicle_No, Vehicle_Type, Vehicle_Hire_Type, Vehicle_Model,
-          Insurance_Expire, PUC_Expire, IsActive, Created_By, Created_at
+          Insurance, Insurance_Expire, PUC, PUC_Expire, GPS_IMEI_No,
+          IsActive, Created_By, Created_at, Updated_at
         ) VALUES (
           @vendorName, @vendorPhone, @vendorEmail, @vendorAddress,
           @vehicleNo, @vehicleType, @hireType, @vehicleModel,
-          @insurance, @puc, @isActive, @createdBy, GETDATE()
+          @insurance, @insuranceExpire, @puc, @pucExpire, @gpsImei,
+          @isActive, @createdBy, GETDATE(), GETDATE()
         );
         SELECT SCOPE_IDENTITY() AS Id;
       `);
@@ -517,24 +1090,36 @@ app.get('/api/vehicles', async (req, res) => {
     const pool = await poolPromise;
     const result = await pool.request().query(`
       SELECT 
-        Id, Vehicle_No, Vehicle_Type, Vehicle_Model,
-        Vehicle_Hire_Type, Insurance_Expire, PUC_Expire,
+        Id, Vendor_Name, Vendor_Phone_No, Vendor_EmailId, Vendor_Address,
+        Vehicle_No, Vehicle_Type, Vehicle_Hire_Type, Vehicle_Model,
+        Insurance, Insurance_Expire, PUC, PUC_Expire, GPS_IMEI_No,
         IsActive, Created_at
       FROM Mst_Vehicle
       ORDER BY Created_at DESC
     `);
 
+    console.log('Raw database result:', result.recordset); // Debug log
+
     const vehicles = result.recordset.map(vehicle => ({
       id: vehicle.Id,
-      number: vehicle.Vehicle_No,
-      type: vehicle.Vehicle_Type,
-      model: vehicle.Vehicle_Model,
+      vendorName: vehicle.Vendor_Name,
+      vendorPhone: vehicle.Vendor_Phone_No,
+      vendorEmail: vehicle.Vendor_EmailId,
+      vendorAddress: vehicle.Vendor_Address,
+      vehicleNo: vehicle.Vehicle_No,          // Changed from 'number' to 'vehicleNo'
+      vehicleType: vehicle.Vehicle_Type,      // Changed from 'type' to 'vehicleType'
       hireType: vehicle.Vehicle_Hire_Type,
+      vehicleModel: vehicle.Vehicle_Model,    // Changed from 'model' to 'vehicleModel'
+      insurance: vehicle.Insurance,
       insuranceExpiry: vehicle.Insurance_Expire,
+      puc: vehicle.PUC,
       pucExpiry: vehicle.PUC_Expire,
-      status: vehicle.IsActive ? 'Available' : 'Inactive',
+      gpsImei: vehicle.GPS_IMEI_No,
+      status: vehicle.IsActive ? 'Active' : 'Inactive',
       createdAt: vehicle.Created_at
     }));
+
+    console.log('Mapped vehicles:', vehicles); // Debug log
 
     res.json({ success: true, data: vehicles });
   } catch (error) {
@@ -543,7 +1128,205 @@ app.get('/api/vehicles', async (req, res) => {
   }
 });
 
-// ===================== DRIVER ROUTES =====================
+// Get Single Vehicle
+app.get('/api/vehicles/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input('id', sql.Int, parseInt(id))
+      .query(`
+        SELECT 
+          Id, Vendor_Name, Vendor_Phone_No, Vendor_EmailId, Vendor_Address,
+          Vehicle_No, Vehicle_Type, Vehicle_Hire_Type, Vehicle_Model,
+          Insurance, Insurance_Expire, PUC, PUC_Expire, GPS_IMEI_No,
+          IsActive, Created_at, Updated_at
+        FROM Mst_Vehicle
+        WHERE Id = @id
+      `);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'Vehicle not found' });
+    }
+
+    const vehicle = result.recordset[0];
+    const vehicleData = {
+      id: vehicle.Id,
+      vendorName: vehicle.Vendor_Name,
+      vendorPhone: vehicle.Vendor_Phone_No,
+      vendorEmail: vehicle.Vendor_EmailId,
+      vendorAddress: vehicle.Vendor_Address,
+      number: vehicle.Vehicle_No,
+      type: vehicle.Vehicle_Type,
+      hireType: vehicle.Vehicle_Hire_Type,
+      model: vehicle.Vehicle_Model,
+      insurance: vehicle.Insurance,
+      insuranceExpiry: vehicle.Insurance_Expire,
+      puc: vehicle.PUC,
+      pucExpiry: vehicle.PUC_Expire,
+      gpsImei: vehicle.GPS_IMEI_No,
+      status: vehicle.IsActive ? 'Active' : 'Inactive',
+      createdAt: vehicle.Created_at,
+      updatedAt: vehicle.Updated_at
+    };
+
+    res.json({ success: true, data: vehicleData });
+  } catch (error) {
+    console.error('Get vehicle error:', error);
+    res.status(500).json({ error: 'Failed to fetch vehicle' });
+  }
+});
+
+// Update Vehicle (YE MISSING THA!)
+app.put('/api/vehicles/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      vendorName, vendorPhoneNo, vendorEmailId, vendorAddress,
+      vehicleNo, vehicleType, hireType, vehicleModel,
+      insurance, insuranceExpireDate, puc, pucExpireDate,
+      gpsImeiNo, activeDeactive
+    } = req.body;
+
+    console.log('Updating vehicle:', id, req.body);
+
+    // Required fields validation
+    if (!vendorName || !vendorPhoneNo || !vendorAddress || !vehicleNo || !vehicleType || !hireType) {
+      return res.status(400).json({ 
+        error: 'Required fields missing',
+        required: ['vendorName', 'vendorPhoneNo', 'vendorAddress', 'vehicleNo', 'vehicleType', 'hireType']
+      });
+    }
+
+    const pool = await poolPromise;
+
+    // Check if vehicle exists
+    const existingVehicle = await pool.request()
+      .input('id', sql.Int, parseInt(id))
+      .query('SELECT Id FROM Mst_Vehicle WHERE Id = @id');
+
+    if (existingVehicle.recordset.length === 0) {
+      return res.status(404).json({ error: 'Vehicle not found' });
+    }
+
+    // Check for duplicate vehicle number (excluding current vehicle)
+    const duplicateCheck = await pool.request()
+      .input('vehicleNo', sql.VarChar, vehicleNo)
+      .input('id', sql.Int, parseInt(id))
+      .query('SELECT Id FROM Mst_Vehicle WHERE Vehicle_No = @vehicleNo AND Id != @id');
+
+    if (duplicateCheck.recordset.length > 0) {
+      return res.status(400).json({ error: 'Vehicle number already exists for another vehicle' });
+    }
+
+    // Update vehicle
+    await pool.request()
+      .input('id', sql.Int, parseInt(id))
+      .input('vendorName', sql.VarChar, vendorName)
+      .input('vendorPhone', sql.VarChar, vendorPhoneNo)
+      .input('vendorEmail', sql.VarChar, vendorEmailId || null)
+      .input('vendorAddress', sql.VarChar, vendorAddress)
+      .input('vehicleNo', sql.VarChar, vehicleNo)
+      .input('vehicleType', sql.VarChar, vehicleType)
+      .input('hireType', sql.VarChar, hireType)
+      .input('vehicleModel', sql.VarChar, vehicleModel || null)
+      .input('insurance', sql.Bit, insurance ? 1 : 0)
+      .input('insuranceExpire', sql.Date, insuranceExpireDate || null)
+      .input('puc', sql.Bit, puc ? 1 : 0)
+      .input('pucExpire', sql.Date, pucExpireDate || null)
+      .input('gpsImei', sql.VarChar, gpsImeiNo || null)
+      .input('isActive', sql.Bit, activeDeactive ? 1 : 0)
+      .input('updatedBy', sql.VarChar, 'System')
+      .query(`
+        UPDATE Mst_Vehicle SET 
+          Vendor_Name = @vendorName,
+          Vendor_Phone_No = @vendorPhone,
+          Vendor_EmailId = @vendorEmail,
+          Vendor_Address = @vendorAddress,
+          Vehicle_No = @vehicleNo,
+          Vehicle_Type = @vehicleType,
+          Vehicle_Hire_Type = @hireType,
+          Vehicle_Model = @vehicleModel,
+          Insurance = @insurance,
+          Insurance_Expire = @insuranceExpire,
+          PUC = @puc,
+          PUC_Expire = @pucExpire,
+          GPS_IMEI_No = @gpsImei,
+          IsActive = @isActive,
+          Updated_at = GETDATE(),
+          Updated_By = @updatedBy
+        WHERE Id = @id
+      `);
+
+    res.json({
+      success: true,
+      message: 'Vehicle updated successfully',
+      data: {
+        id: parseInt(id),
+        vehicleNo: vehicleNo,
+        vehicleType: vehicleType,
+        status: activeDeactive ? 'Active' : 'Inactive'
+      }
+    });
+
+  } catch (error) {
+    console.error('Update vehicle error:', error);
+    res.status(500).json({ 
+      error: 'Failed to update vehicle',
+      details: error.message
+    });
+  }
+});
+
+// Delete Vehicle (YE BHI MISSING THA!)
+app.delete('/api/vehicles/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    console.log('Deleting vehicle:', id);
+
+    const pool = await poolPromise;
+
+    // Check if vehicle exists
+    const existingVehicle = await pool.request()
+      .input('id', sql.Int, parseInt(id))
+      .query('SELECT Id, Vehicle_No FROM Mst_Vehicle WHERE Id = @id');
+
+    if (existingVehicle.recordset.length === 0) {
+      return res.status(404).json({ error: 'Vehicle not found' });
+    }
+
+    const vehicleNo = existingVehicle.recordset[0].Vehicle_No;
+
+    // Delete vehicle
+    await pool.request()
+      .input('id', sql.Int, parseInt(id))
+      .query('DELETE FROM Mst_Vehicle WHERE Id = @id');
+
+    res.json({
+      success: true,
+      message: `Vehicle "${vehicleNo}" deleted successfully`
+    });
+
+  } catch (error) {
+    console.error('Delete vehicle error:', error);
+    
+    if (error.number === 547) {
+      res.status(400).json({ 
+        error: 'Cannot delete vehicle: Vehicle has related bookings in the system'
+      });
+    } else {
+      res.status(500).json({ 
+        error: 'Failed to delete vehicle',
+        details: error.message
+      });
+    }
+  }
+});
+
+
+// ===================== DRIVER ROUTES =====================//
 
 // Create Driver
 app.post('/api/drivers', async (req, res) => {
@@ -621,6 +1404,7 @@ app.get('/api/drivers', async (req, res) => {
         Id, Driver_Name, Driver_Phone_No, DL_No, Experience,
         IsActive, IsAvailable, Created_at
       FROM Mst_Driver
+      WHERE IsActive = 1
       ORDER BY Created_at DESC
     `);
 
@@ -628,9 +1412,10 @@ app.get('/api/drivers', async (req, res) => {
       id: driver.Id,
       name: driver.Driver_Name,
       phone: driver.Driver_Phone_No,
+      email: null, // Not available in your schema
       license: driver.DL_No,
-      experience: `${driver.Experience} years`,
-      status: driver.IsAvailable ? 'Available' : (driver.IsActive ? 'On Trip' : 'Inactive'),
+      experience: driver.Experience,
+      status: driver.IsAvailable ? 'Available' : 'On Trip',
       createdAt: driver.Created_at
     }));
 
@@ -641,6 +1426,210 @@ app.get('/api/drivers', async (req, res) => {
   }
 });
 
+// Get Single Driver by ID
+app.get('/api/drivers/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+    
+    const result = await pool.request()
+      .input('id', sql.Int, id)
+      .query(`
+        SELECT 
+          Id, Driver_Name, Driver_Phone_No, Driver_Address,
+          Emergency_Contact_Person, Emergency_Contact_No, Gender, DOB,
+          Experience, DL_No, DL_Expire, IsActive, IsAvailable,
+          Created_at, Updated_at
+        FROM Mst_Driver 
+        WHERE Id = @id AND IsActive = 1
+      `);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'Driver not found' });
+    }
+
+    const driver = result.recordset[0];
+    
+    // Calculate age from DOB if available
+    let calculatedAge = null;
+    if (driver.DOB) {
+      const today = new Date();
+      const birthDate = new Date(driver.DOB);
+      calculatedAge = today.getFullYear() - birthDate.getFullYear();
+      const monthDiff = today.getMonth() - birthDate.getMonth();
+      if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+        calculatedAge--;
+      }
+    }
+
+    const driverData = {
+      id: driver.Id,
+      driverName: driver.Driver_Name,
+      phone: driver.Driver_Phone_No,
+      address: driver.Driver_Address,
+      email: '', // Not available in schema
+      emergencyName: driver.Emergency_Contact_Person,
+      emergencyPhone: driver.Emergency_Contact_No,
+      gender: driver.Gender,
+      dob: driver.DOB,
+      age: calculatedAge,
+      experience: driver.Experience,
+      licenseNumber: driver.DL_No,
+      issueDate: null, // Not available in schema
+      expiryDate: driver.DL_Expire,
+      isActive: driver.IsActive,
+      isAvailable: driver.IsAvailable,
+      createdAt: driver.Created_at,
+      updatedAt: driver.Updated_at
+    };
+
+    res.json({ success: true, data: driverData });
+  } catch (error) {
+    console.error('Get driver by ID error:', error);
+    res.status(500).json({ error: 'Failed to fetch driver details' });
+  }
+});
+
+// Update Driver
+app.put('/api/drivers/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      driverName, dob, age, gender, address, phone, email,
+      licenseNumber, issueDate, expiryDate, experience,
+      emergencyName, emergencyPhone
+    } = req.body;
+
+    if (!driverName || !phone || !licenseNumber || !experience) {
+      return res.status(400).json({ error: 'Driver name, phone, license number, and experience are required' });
+    }
+
+    const pool = await poolPromise;
+
+    // Check if driver exists
+    const existingDriver = await pool.request()
+      .input('id', sql.Int, id)
+      .query('SELECT Id FROM Mst_Driver WHERE Id = @id AND IsActive = 1');
+
+    if (existingDriver.recordset.length === 0) {
+      return res.status(404).json({ error: 'Driver not found' });
+    }
+
+    // Check for duplicate phone or license (excluding current driver)
+    const duplicateCheck = await pool.request()
+      .input('phone', sql.VarChar, phone)
+      .input('license', sql.VarChar, licenseNumber)
+      .input('id', sql.Int, id)
+      .query(`
+        SELECT Id FROM Mst_Driver 
+        WHERE (Driver_Phone_No = @phone OR DL_No = @license) 
+        AND Id != @id AND IsActive = 1
+      `);
+
+    if (duplicateCheck.recordset.length > 0) {
+      return res.status(400).json({ error: 'Another driver with this phone or license number already exists' });
+    }
+
+    // Update driver
+    await pool.request()
+      .input('id', sql.Int, id)
+      .input('driverName', sql.VarChar, driverName)
+      .input('driverPhone', sql.VarChar, phone)
+      .input('driverAddress', sql.VarChar, address || '')
+      .input('emergencyContact', sql.VarChar, emergencyName || '')
+      .input('emergencyPhone', sql.VarChar, emergencyPhone || '')
+      .input('gender', sql.VarChar, gender || '')
+      .input('dob', sql.Date, dob || null)
+      .input('experience', sql.VarChar, experience.toString())
+      .input('dlNo', sql.VarChar, licenseNumber)
+      .input('dlExpire', sql.Date, expiryDate || null)
+      .input('updatedBy', sql.VarChar, '1')
+      .query(`
+        UPDATE Mst_Driver SET
+          Driver_Name = @driverName,
+          Driver_Phone_No = @driverPhone,
+          Driver_Address = @driverAddress,
+          Emergency_Contact_Person = @emergencyContact,
+          Emergency_Contact_No = @emergencyPhone,
+          Gender = @gender,
+          DOB = @dob,
+          Experience = @experience,
+          DL_No = @dlNo,
+          DL_Expire = @dlExpire,
+          Updated_By = @updatedBy,
+          Updated_at = GETDATE()
+        WHERE Id = @id
+      `);
+
+    res.json({
+      success: true,
+      message: 'Driver updated successfully'
+    });
+
+  } catch (error) {
+    console.error('Update driver error:', error);
+    res.status(500).json({ error: 'Failed to update driver' });
+  }
+});
+
+// Delete Driver (Soft Delete)
+app.delete('/api/drivers/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if driver exists
+    const existingDriver = await pool.request()
+      .input('id', sql.Int, id)
+      .query('SELECT Id, Driver_Name FROM Mst_Driver WHERE Id = @id AND IsActive = 1');
+
+    if (existingDriver.recordset.length === 0) {
+      return res.status(404).json({ error: 'Driver not found' });
+    }
+
+    const driverName = existingDriver.recordset[0].Driver_Name;
+
+    // Note: Commented out booking check since we don't know your bookings table structure
+    // You can uncomment and modify this if you have a bookings table
+    /*
+    const activeBookings = await pool.request()
+      .input('driverId', sql.Int, id)
+      .query(`
+        SELECT COUNT(*) as count FROM Bookings 
+        WHERE Driver_Id = @driverId 
+        AND Status IN ('Active', 'In Progress', 'Assigned')
+      `);
+
+    if (activeBookings.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete driver. Driver is currently assigned to active bookings.' 
+      });
+    }
+    */
+
+    // Soft delete - set IsActive to 0
+    await pool.request()
+      .input('id', sql.Int, id)
+      .input('updatedBy', sql.VarChar, '1')
+      .query(`
+        UPDATE Mst_Driver SET
+          IsActive = 0,
+          IsAvailable = 0,
+          Updated_By = @updatedBy,
+          Updated_at = GETDATE()
+        WHERE Id = @id
+      `);
+
+    res.json({
+      success: true,
+      message: `Driver "${driverName}" deleted successfully`
+    });
+
+  } catch (error) {
+    console.error('Delete driver error:', error);
+    res.status(500).json({ error: 'Failed to delete driver' });
+  }
+});
 // ===================== ROUTE ROUTES =====================
 
 // Create Route
@@ -819,6 +1808,5927 @@ app.get('/api/routes', async (req, res) => {
   } catch (error) {
     console.error('Get routes error:', error);
     res.status(500).json({ error: 'Failed to fetch routes' });
+  }
+});
+
+app.get('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Get route details
+    const routeResult = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT 
+          Id, Route_No, Route_Name, Route_Source, Route_Destination,
+          Eastimated_Distance, Eastimated_Time, IsActive, Created_at
+        FROM Mst_Routes 
+        WHERE Id = @routeId
+      `);
+
+    if (routeResult.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const route = routeResult.recordset[0];
+
+    // Get stops for this route
+    const stopsResult = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT 
+          s.Id, s.Stop_Name, s.Stop_Address, s.Stop_Lat, s.Stop_Long
+        FROM Mst_Stoppage s
+        INNER JOIN Mstmap_Route_Stoppage mrs ON s.Id = mrs.Stoppage_Id
+        WHERE mrs.Route_Id = @routeId AND mrs.IsActive = 1 AND s.IsActive = 1
+        ORDER BY mrs.Created_at
+      `);
+
+    // Parse duration from time string
+    let durationMinutes = 0;
+    if (route.Eastimated_Time) {
+      const timeStr = route.Eastimated_Time.toString();
+      if (timeStr.includes(':')) {
+        const timeParts = timeStr.split(':');
+        if (timeParts.length >= 2) {
+          const hours = parseInt(timeParts[0]) || 0;
+          const minutes = parseInt(timeParts[1]) || 0;
+          durationMinutes = hours * 60 + minutes;
+        }
+      } else {
+        durationMinutes = parseInt(timeStr) || 0;
+      }
+    }
+
+    // Format stops for frontend
+    const stops = stopsResult.recordset.map(stop => ({
+      id: stop.Id,
+      stopName: stop.Stop_Name,
+      address: stop.Stop_Address,
+      lat: stop.Stop_Lat,
+      lng: stop.Stop_Long
+    }));
+
+    const formattedRoute = {
+      id: route.Id,
+      routeNo: route.Route_No,
+      name: route.Route_Name,
+      source: route.Route_Source,
+      destination: route.Route_Destination,
+      distance: route.Eastimated_Distance ? `${route.Eastimated_Distance} km` : '',
+      duration: `${durationMinutes} mins`,
+      status: route.IsActive ? 'Active' : 'Inactive',
+      createdAt: route.Created_at,
+      stops: stops
+    };
+
+    res.json({ success: true, data: formattedRoute });
+  } catch (error) {
+    console.error('Get route by ID error:', error);
+    res.status(500).json({ error: 'Failed to fetch route details' });
+  }
+});
+
+// Update Route
+app.put('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      routeId, name, origin, destination, estimatedDistanceKm,
+      estimatedTimeMinutes, isActive = true, stops = []
+    } = req.body;
+
+    console.log('Updating route:', id, {
+      routeId, name, origin, destination, estimatedDistanceKm, estimatedTimeMinutes, stops: stops.length
+    });
+
+    if (!routeId || !name || !origin || !destination || !estimatedDistanceKm || !estimatedTimeMinutes) {
+      return res.status(400).json({ error: 'All route information fields are required' });
+    }
+
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Convert minutes to HH:MM:SS format
+      const totalMinutes = parseInt(estimatedTimeMinutes);
+      const hours = Math.floor(totalMinutes / 60);
+      const minutes = totalMinutes % 60;
+      const timeString = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:00`;
+
+      // Update route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .input('routeName', sql.VarChar, name)
+        .input('routeSource', sql.VarChar, origin)
+        .input('routeDestination', sql.VarChar, destination)
+        .input('estimatedDistance', sql.Int, parseInt(estimatedDistanceKm))
+        .input('estimatedTime', sql.VarChar, timeString)
+        .input('isActive', sql.Bit, isActive ? 1 : 0)
+        .query(`
+          UPDATE Mst_Routes SET
+            Route_Name = @routeName,
+            Route_Source = @routeSource,
+            Route_Destination = @routeDestination,
+            Eastimated_Distance = @estimatedDistance,
+            Eastimated_Time = @estimatedTime,
+            IsActive = @isActive,
+            Updated_at = GETDATE()
+          WHERE Id = @routeId
+        `);
+
+      // Remove existing route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Remove existing stops that are no longer used (optional - you might want to keep them for history)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Add new stops
+      let stopsUpdated = 0;
+      if (stops && stops.length > 0) {
+        for (let i = 0; i < stops.length; i++) {
+          const stop = stops[i];
+          
+          // Insert new stop
+          const stopResult = await transaction.request()
+            .input('stopName', sql.VarChar, stop.stopName)
+            .input('stopAddress', sql.VarChar, stop.address)
+            .input('stopLat', sql.VarChar, stop.lat.toString())
+            .input('stopLong', sql.VarChar, stop.lng.toString())
+            .input('isActive', sql.Bit, 1)
+            .input('createdBy', sql.VarChar, '1')
+            .query(`
+              INSERT INTO Mst_Stoppage (
+                Stop_Name, Stop_Address, Stop_Lat, Stop_Long,
+                IsActive, Created_By, Created_at
+              ) VALUES (
+                @stopName, @stopAddress, @stopLat, @stopLong,
+                @isActive, @createdBy, GETDATE()
+              );
+              SELECT SCOPE_IDENTITY() AS Id;
+            `);
+
+          const stoppageId = stopResult.recordset[0].Id;
+
+          // Map stop to route
+          await transaction.request()
+            .input('routeId', sql.Int, parseInt(id))
+            .input('stoppageId', sql.Int, stoppageId)
+            .input('isActive', sql.Bit, 1)
+            .input('createdBy', sql.VarChar, '1')
+            .query(`
+              INSERT INTO Mstmap_Route_Stoppage (
+                Route_Id, Stoppage_Id, IsActive, Created_By, Created_at
+              ) VALUES (
+                @routeId, @stoppageId, @isActive, @createdBy, GETDATE()
+              );
+            `);
+
+          stopsUpdated++;
+        }
+      }
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: 'Route updated successfully',
+        routeId: parseInt(id),
+        stopsUpdated: stopsUpdated
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Update route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to update route',
+      details: error.message
+    });
+  }
+});
+
+
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
+  }
+});
+// Delete Route - FIXED VERSION
+app.delete('/api/routes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await poolPromise;
+
+    // Check if route exists
+    const existingRoute = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query('SELECT Id, Route_Name FROM Mst_Routes WHERE Id = @routeId');
+
+    if (existingRoute.recordset.length === 0) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    const routeName = existingRoute.recordset[0].Route_Name;
+
+    // Check if route is being used in any active cab assignments (not cab requests)
+    // Since Cab_Requests doesn't have Route_Id, we check Cab_Assignments instead
+    const activeAssignments = await pool.request()
+      .input('routeId', sql.Int, parseInt(id))
+      .query(`
+        SELECT COUNT(*) as count 
+        FROM Cab_Assignments ca
+        INNER JOIN Cab_Requests cr ON ca.Cab_Request_Id = cr.Id
+        WHERE ca.Route_Id = @routeId 
+        AND ca.Assignment_Status IN ('Assigned', 'In Progress', 'Started')
+        AND cr.Status IN ('Pending', 'Accepted', 'In_Progress')
+      `);
+
+    if (activeAssignments.recordset[0].count > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete route: There are active cab assignments using this route' 
+      });
+    }
+
+    const transaction = new sql.Transaction(pool);
+
+    try {
+      await transaction.begin();
+
+      // Soft delete: Set IsActive = 0 instead of hard delete to maintain data integrity
+      
+      // Deactivate route-stop mappings
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mstmap_Route_Stoppage SET IsActive = 0 WHERE Route_Id = @routeId');
+
+      // Deactivate associated stops (optional - you might want to keep them if used by other routes)
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query(`
+          UPDATE Mst_Stoppage SET IsActive = 0 
+          WHERE Id IN (
+            SELECT DISTINCT Stoppage_Id 
+            FROM Mstmap_Route_Stoppage 
+            WHERE Route_Id = @routeId
+          )
+        `);
+
+      // Deactivate the route
+      await transaction.request()
+        .input('routeId', sql.Int, parseInt(id))
+        .query('UPDATE Mst_Routes SET IsActive = 0, Updated_at = GETDATE() WHERE Id = @routeId');
+
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Route "${routeName}" deleted successfully`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('Delete route error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete route',
+      details: error.message
+    });
   }
 });
 
