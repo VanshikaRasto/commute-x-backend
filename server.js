@@ -64,17 +64,61 @@ const initializeDatabase = async () => {
 // Middleware to verify JWT token
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) {
-    return res.status(401).json({ error: 'Access token required' });
+  console.log('Auth header received:', authHeader ? authHeader.substring(0, 20) + '...' : 'None');
+  
+  if (!authHeader) {
+    console.log('❌ No authorization header');
+    return res.status(401).json({ 
+      success: false,
+      error: 'Authorization header missing' 
+    });
   }
 
-  jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key', (err, user) => {
+  if (!authHeader.startsWith('Bearer ')) {
+    console.log('❌ Invalid authorization header format');
+    return res.status(401).json({ 
+      success: false,
+      error: 'Invalid authorization header format' 
+    });
+  }
+
+  const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+
+  if (!token) {
+    console.log('❌ No token provided');
+    return res.status(401).json({ 
+      success: false,
+      error: 'Access token required' 
+    });
+  }
+
+  // Verify JWT token
+  const secret = process.env.JWT_SECRET || 'your-secret-key';
+  
+  jwt.verify(token, secret, (err, decoded) => {
     if (err) {
-      return res.status(403).json({ error: 'Invalid token' });
+      console.log('❌ Token verification failed:', err.message);
+      
+      if (err.name === 'TokenExpiredError') {
+        return res.status(401).json({ 
+          success: false,
+          error: 'Token has expired. Please login again.' 
+        });
+      } else if (err.name === 'JsonWebTokenError') {
+        return res.status(403).json({ 
+          success: false,
+          error: 'Invalid token. Please login again.' 
+        });
+      } else {
+        return res.status(403).json({ 
+          success: false,
+          error: 'Token verification failed' 
+        });
+      }
     }
-    req.user = user;
+
+    console.log('✅ Token verified successfully for user:', decoded.userId);
+    req.user = decoded;
     next();
   });
 };
@@ -146,54 +190,31 @@ const formatDateForInput = (dateString) => {
 
 // ===================== AUTH ROUTES =====================
 
-// Login Route
-app.post('/api/auth/login', async (req, res) => {
+
+app.get('/api/test-auth', authenticateToken, async (req, res) => {
   try {
-    const { username, password } = req.body;
-    
     const pool = await poolPromise;
+    
     const result = await pool.request()
-      .input('username', sql.VarChar, username)
+      .input('userId', sql.Int, req.user.userId)
       .query(`
-        SELECT Id, U_Name, Email_ID, u_Password, Hash_Password, Role_Id, IsActive 
+        SELECT Id, U_Name, Email_ID, Role_Id, IsActive 
         FROM Users 
-        WHERE U_Name = @username OR Email_ID = @username
+        WHERE Id = @userId AND IsActive = 1
       `);
 
     if (result.recordset.length === 0) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'User not found or inactive' 
+      });
     }
 
     const user = result.recordset[0];
 
-    // Check password (both plain and hashed)
-    const isValidPassword = 
-      password === user.u_Password || 
-      (user.Hash_Password && await bcrypt.compare(password, user.Hash_Password));
-
-    if (!isValidPassword) {
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
-
-    if (!user.IsActive) {
-      return res.status(401).json({ error: 'Account is deactivated' });
-    }
-
-    // Generate JWT token
-    const token = jwt.sign(
-      { userId: user.Id, username: user.U_Name, role: user.Role_Id },
-      process.env.JWT_SECRET || 'your-secret-key',
-      { expiresIn: '24h' }
-    );
-
-    // Update last login
-    await pool.request()
-      .input('userId', sql.Int, user.Id)
-      .query('UPDATE Users SET Last_Login_at = GETDATE(), IsLoggedIn = 1 WHERE Id = @userId');
-
     res.json({
       success: true,
-      token,
+      message: 'Authentication valid',
       user: {
         id: user.Id,
         name: user.U_Name,
@@ -203,11 +224,107 @@ app.post('/api/auth/login', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ error: 'Server error during login' });
+    console.error('Test auth error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error during authentication test' 
+    });
   }
 });
+// Login Route
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    
+    console.log('Login attempt for username:', username);
+    
+    const pool = await poolPromise;
+    const result = await pool.request()
+      .input('username', sql.VarChar, username)
+      .query(`
+        SELECT Id, U_Name, Email_ID, u_Password, Hash_Password, Role_Id, IsActive 
+        FROM Users 
+        WHERE (U_Name = @username OR Email_ID = @username)
+        AND IsActive = 1
+      `);
 
+    if (result.recordset.length === 0) {
+      console.log('❌ User not found:', username);
+      return res.status(401).json({ 
+        success: false,
+        error: 'Invalid credentials' 
+      });
+    }
+
+    const user = result.recordset[0];
+    console.log('User found:', user.U_Name, 'Role:', user.Role_Id);
+
+    // Check password (both plain and hashed)
+    let isValidPassword = false;
+    
+    if (user.Hash_Password && user.Hash_Password !== '') {
+      // Use bcrypt for hashed password
+      isValidPassword = await bcrypt.compare(password, user.Hash_Password);
+    } else if (user.u_Password) {
+      // Fallback to plain text comparison
+      isValidPassword = password === user.u_Password;
+    }
+
+    if (!isValidPassword) {
+      console.log('❌ Invalid password for user:', username);
+      return res.status(401).json({ 
+        success: false,
+        error: 'Invalid credentials' 
+      });
+    }
+
+    // Generate JWT token with more complete payload
+    const tokenPayload = {
+      userId: user.Id,
+      username: user.U_Name,
+      email: user.Email_ID,
+      role: user.Role_Id,
+      iat: Math.floor(Date.now() / 1000), // Issued at
+      exp: Math.floor(Date.now() / 1000) + (24 * 60 * 60) // Expires in 24 hours
+    };
+
+    const token = jwt.sign(
+      tokenPayload,
+      process.env.JWT_SECRET || 'your-secret-key'
+    );
+
+    console.log('✅ Login successful for user:', user.U_Name);
+    console.log('Generated token:', token.substring(0, 20) + '...');
+
+    // Update last login
+    await pool.request()
+      .input('userId', sql.Int, user.Id)
+      .query('UPDATE Users SET Last_Login_at = GETDATE(), IsLoggedIn = 1 WHERE Id = @userId');
+
+    const userInfo = {
+      id: user.Id,
+      name: user.U_Name,
+      email: user.Email_ID,
+      role: user.Role_Id,
+      U_Name: user.U_Name, // Add this for backward compatibility
+      U_Role: user.Role_Id  // Add this for backward compatibility
+    };
+
+    res.json({
+      success: true,
+      message: 'Login successful',
+      token,
+      user: userInfo
+    });
+
+  } catch (error) {
+    console.error('❌ Login error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error during login' 
+    });
+  }
+});
 // Logout Route
 app.post('/api/auth/logout', authenticateToken, async (req, res) => {
   try {
@@ -7820,6 +7937,49 @@ app.get('/api/cab-requests', async (req, res) => {
   }
 });
 
+// Add this NEW route - it's missing from your server.js
+app.get('/api/test-auth', authenticateToken, async (req, res) => {
+  try {
+    // If we get here, the token is valid
+    const pool = await poolPromise;
+    
+    // Get user details from database
+    const result = await pool.request()
+      .input('userId', sql.Int, req.user.userId)
+      .query(`
+        SELECT Id, U_Name, Email_ID, Role_Id, IsActive 
+        FROM Users 
+        WHERE Id = @userId AND IsActive = 1
+      `);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'User not found or inactive' 
+      });
+    }
+
+    const user = result.recordset[0];
+
+    res.json({
+      success: true,
+      message: 'Authentication valid',
+      user: {
+        id: user.Id,
+        name: user.U_Name,
+        email: user.Email_ID,
+        role: user.Role_Id
+      }
+    });
+
+  } catch (error) {
+    console.error('Test auth error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error during authentication test' 
+    });
+  }
+});
 // Update Cab Request Status and Assign Driver/Vehicle
 app.put('/api/cab-requests/:id', authenticateToken, checkRole(['admin', 'dispatcher']), async (req, res) => {
   try {
